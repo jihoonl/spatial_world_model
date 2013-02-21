@@ -1,0 +1,238 @@
+#!/usr/bin/env python
+
+# Software License Agreement (BSD License)
+#
+# Copyright (c) 2013, Willow Garage, Inc.
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+#
+# * Redistributions of source code must retain the above copyright
+# notice, this list of conditions and the following disclaimer.
+# * Redistributions in binary form must reproduce the above
+# copyright notice, this list of conditions and the following
+# disclaimer in the documentation and/or other materials provided
+# with the distribution.
+# * Neither the name of Willow Garage, Inc. nor the names of its
+# contributors may be used to endorse or promote products derived
+# from this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+# FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+# COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+# INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+# BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+# LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+# LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+# ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
+
+'''
+This is the main script to setup the world model database. This script should be run only if you
+are setting up a **local** PostgreSQL database for use with the world model. It can also be used
+to upgrade an exiting world model.
+
+@author:  Russell Toris
+@version: February 13, 2013
+'''
+
+import psycopg2
+import argparse
+import sys
+
+# name of the main database
+_db = 'world_model'
+# name of the main version table
+_version = 'version'
+# current database version
+_v = '0.0.1'
+# name of the descriptors table
+_descriptors = 'descriptors'
+# name of the world object descriptions table
+_wod = 'world_object_descriptions'
+# name of the world object instances table
+_woi = 'world_object_instances'
+
+def update_database(conn):
+    '''
+    The main update function for the World Model database.
+    
+    @param conn: the PostgreSQL connection
+    @type conn: Connection
+    '''
+    print 'Begining World Model update...'
+    conn.close()
+    print 'World Model update completed successfully!'
+
+def init_database(conn):
+    '''
+    The main first time setup function for the World Model database.
+    
+    @param conn: the PostgreSQL connection
+    @type conn: Connection
+    '''
+    print 'Begining first time World Model setup...'
+    cur = conn.cursor()
+    # version table
+    sys.stdout.write('+ Creating table "' + _version + '"... ')
+    cur.execute("""
+                CREATE TABLE """ + _version + """ (
+                   version character varying
+                ) WITH (
+                  OIDS = FALSE
+                );
+                COMMENT ON COLUMN """ + _version + """.version IS 
+                    'Current World Model database version.';
+                COMMENT ON TABLE version IS 
+                    'Version number of the World Model database.';
+                INSERT INTO """ + _version + """ (version) VALUES (%s)
+                """, (_v,))
+    print 'done.'
+    # world object description table
+    sys.stdout.write('+ Creating table "' + _wod + '"... ')
+    cur.execute("""
+                CREATE TABLE """ + _wod + """  (
+                    description_id bigserial NOT NULL, 
+                    name character varying, 
+                    tags character varying[], 
+                    CONSTRAINT description_id PRIMARY KEY (description_id)
+                ) WITH (
+                    OIDS = FALSE
+                );
+                COMMENT ON COLUMN """ + _wod + """.description_id IS
+                    'Unique identifier for this world object description.';
+                COMMENT ON COLUMN """ + _wod + """.name IS 
+                    'A human-readable name for this world object description.';
+                COMMENT ON COLUMN """ + _wod + """.tags IS
+                    'High level tags.';
+                COMMENT ON TABLE """ + _wod + """ IS
+                    'World object descriptions for the World Model.';
+            """)
+    print 'done.'
+    # descriptors table
+    sys.stdout.write('+ Creating table "' + _descriptors + '"... ')
+    cur.execute("""
+                CREATE TABLE """ + _descriptors + """  (
+                    descriptor_id bigserial NOT NULL, 
+                    description_id bigserial NOT NULL, 
+                    type character varying, 
+                    data oid, 
+                    ref character varying, 
+                    tags character varying[],
+                    CONSTRAINT descriptor_id PRIMARY KEY (descriptor_id),
+                    CONSTRAINT wod_id FOREIGN KEY (description_id) 
+                        REFERENCES """ + _wod + """ (description_id)
+                ) WITH (
+                    OIDS = FALSE
+                );
+                COMMENT ON COLUMN """ + _descriptors + """.descriptor_id IS 
+                    'The ID of the descriptor.';
+                COMMENT ON COLUMN """ + _descriptors + """.description_id IS 
+                    'The ID of the world object description this descriptor belongs to.';
+                COMMENT ON COLUMN """ + _descriptors + """.data IS 
+                    'Raw message data, XML (URDF), JSON, base64 encoding, ...).';
+                COMMENT ON COLUMN """ + _descriptors + """.type IS 
+                    'Type of data (nav_msgs/OccupancyGrid, URDF, Collada, ...).';
+                COMMENT ON COLUMN """ + _descriptors + """.ref IS 
+                    'JSON representation of source reference.';
+                COMMENT ON COLUMN """ + _descriptors + """.tags IS 
+                    'High level tag (kinematics, shape, ...).';
+                COMMENT ON TABLE """ + _descriptors + """ IS 
+                    'A descriptor of a world model object.';
+            """)
+    print 'done.'
+    # world object instance table
+    sys.stdout.write('+ Creating table "' + _woi + '"... ')
+    cur.execute("""
+                CREATE TABLE """ + _woi + """  (
+                    instance_id bigserial NOT NULL, 
+                    name character varying, 
+                    creation timestamp with time zone, 
+                    update timestamp with time zone, 
+                    expected_ttl bigint, 
+                    perceived_end timestamp with time zone, 
+                    source_origin character varying, 
+                    source_creator character varying, 
+                    pose_seq integer, 
+                    pose_stamp timestamp with time zone, 
+                    pose_frame_id character varying, 
+                    pose_position double precision[3], 
+                    pose_orientation double precision[4], 
+                    pose_covariance double precision[36], 
+                    description_id bigint, 
+                    properties character varying[], 
+                    tags character varying[], 
+                    CONSTRAINT instance_id PRIMARY KEY (instance_id), 
+                    CONSTRAINT description FOREIGN KEY (description_id) 
+                        REFERENCES """ + _wod + """ (description_id) 
+                        ON UPDATE CASCADE ON DELETE SET NULL
+                ) WITH (
+                    OIDS = FALSE
+                );
+                COMMENT ON COLUMN """ + _woi + """.instance_id IS 
+                    'A unique identifier for this instance.';
+                COMMENT ON COLUMN """ + _woi + """.name IS 
+                    'A human-readable name for this instance.';
+                COMMENT ON COLUMN """ + _woi + """.creation IS 
+                    'Creation time of the instance.';
+                COMMENT ON COLUMN """ + _woi + """.update IS 
+                    'Last time this instance was updated.';
+                COMMENT ON COLUMN """ + _woi + """.expected_ttl IS 
+                    'An estimate of how long this instance''s information will be valid.';
+                COMMENT ON COLUMN """ + _woi + """.perceived_end IS 
+                    'The actual time this instance was removed from the robot''s working memory.';
+                COMMENT ON COLUMN """ + _woi + """.source_origin IS 
+                    'Hostname or IP of the source origin.';
+                COMMENT ON COLUMN """ + _woi + """.source_creator IS 
+                    'The creator (e.g., username or node name).';
+                COMMENT ON COLUMN """ + _woi + """.pose_seq IS 
+                    'Sequence number for the pose.';
+                COMMENT ON COLUMN """ + _woi + """.pose_stamp IS 
+                    'Timestamp for the pose.';
+                COMMENT ON COLUMN """ + _woi + """.pose_frame_id IS 
+                    'Reference frame for the pose.';
+                COMMENT ON COLUMN """ + _woi + """.pose_position IS 
+                    'X, Y, Z position information for the pose.';
+                COMMENT ON COLUMN """ + _woi + """.pose_orientation IS 
+                    'X, Y, Z, W orientation information for the pose.';
+                COMMENT ON COLUMN """ + _woi + """.pose_covariance IS 
+                    'Covariance information for the pose.';
+                COMMENT ON COLUMN """ + _woi + """.description_id IS 
+                    'Spatial descriptions of the object itself.';
+                COMMENT ON COLUMN """ + _woi + """.properties IS 
+                    'Object properties and relationships.';
+                COMMENT ON COLUMN """ + _woi + """.tags IS 
+                    'High level tags.';
+                COMMENT ON TABLE """ + _woi + """ IS 
+                    'World object instances in the World Model.';
+            """)
+    print 'done.'
+    conn.commit()
+    conn.close()
+    print 'World Model setup completed successfully!'
+
+if __name__ == '__main__':
+    # get the username and password
+    parser = argparse.ArgumentParser(description='Setup or update a local World Model database.')
+    parser.add_argument('-u', '--username', help='the database username', required=True)
+    parser.add_argument('-p', '--password', help='the database password', required=True)
+    args = vars(parser.parse_args())
+    try:
+        # check if this is a setup or update
+        conn = psycopg2.connect(database=_db, user=args['username'], password=args['password'],
+                                host='localhost')
+        cur = conn.cursor()
+        cur.execute("""SELECT * FROM information_schema.tables WHERE table_name=%s""", (_version,))
+        if len(cur.fetchall()) is 0:
+            cur.close()
+            init_database(conn)
+        else:
+            cur.close()
+            update_database(conn)
+    except Exception as e:
+        print e
