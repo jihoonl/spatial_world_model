@@ -1,0 +1,20 @@
+<!--
+  Author: Russell Toris, Worcester Polytechnic Institute
+  Version: February 22, 2013
+-->
+
+<launch>
+  <arg name="host" default="localhost" />
+  <arg name="user" default="world" />
+  <arg name="password" default="model" />
+  
+  <!-- world model -->
+  <node name="spatial_world_model" pkg="worldlib" type="spatial_world_model" output="screen" respawn="true" >
+    <param name="host" value="$(arg host)" />
+    <param name="user" value="$(arg user)" />
+    <param name="password" value="$(arg password)" />
+  </node>
+  <!-- listeners -->
+  <node name="map_listener" pkg="world_listeners" type="map_listener" output="screen" respawn="true" />
+  <node name="robot_pose_listener" pkg="world_listeners" type="robot_pose_listener" output="screen" respawn="true" />
+</launch>

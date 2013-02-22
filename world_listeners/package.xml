@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<package>
+  <name>world_listeners</name>
+  <version>0.0.1</version>
+  <description>A set of useful nodes to publish information from ROS into the spatial world model.</description>
+
+  <maintainer email="rctoris@wpi.edu">Russell Toris</maintainer>
+  <author email="rctoris@wpi.edu">Russell Toris</author>
+
+  <license>BSD</license>
+  
+  <url type="website">http://ros.org/wiki/worldlib</url>
+  <url type="bugtracker">https://github.com/RobotWebTools/spatial_world_model/issues</url>
+  <url type="repository">https://github.com/RobotWebTools/spatial_world_model</url>
+  
+  <buildtool_depend>catkin</buildtool_depend>
+  <build_depend>rospy</build_depend>
+  <build_depend>nav_msgs</build_depend>
+  <build_depend>worldlib</build_depend>
+  <build_depend>rospy_message_converter</build_depend>
+  <build_depend>actionlib</build_depend>
+
+  <run_depend>rospy</run_depend>
+  <run_depend>nav_msgs</run_depend>
+  <run_depend>worldlib</run_depend>
+  <run_depend>rospy_message_converter</run_depend>
+  <run_depend>actionlib</run_depend>
+  <run_depend>worldlib</run_depend>
+</package>

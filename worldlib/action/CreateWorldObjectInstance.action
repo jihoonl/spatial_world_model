@@ -1,0 +1,6 @@
+# the instance to insert into the world model
+world_msgs/WorldObjectInstance instance
+---
+# the instance_id assigned to the instance
+int32 instance_id
+---

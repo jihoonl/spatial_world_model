@@ -1,0 +1,213 @@
+#!/usr/bin/env python
+
+# Software License Agreement (BSD License)
+#
+# Copyright (c) 2013, Willow Garage, Inc.
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+#
+# * Redistributions of source code must retain the above copyright
+# notice, this list of conditions and the following disclaimer.
+# * Redistributions in binary form must reproduce the above
+# copyright notice, this list of conditions and the following
+# disclaimer in the documentation and/or other materials provided
+# with the distribution.
+# * Neither the name of Willow Garage, Inc. nor the names of its
+# contributors may be used to endorse or promote products derived
+# from this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+# FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+# COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+# INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+# BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+# LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+# LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+# ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
+
+'''
+The map_listener node listens to a specified OccupancyGrid message and updates the world model
+accordingly.
+
+@author:  Russell Toris
+@version: February 22, 2013
+'''
+
+import rospy
+import actionlib
+import json
+from nav_msgs.msg import OccupancyGrid
+from worldlib.msg import *
+from world_msgs.msg import WorldObjectInstance, WorldObjectDescription, Descriptor
+from rospy_message_converter.json_message_converter import convert_ros_message_to_json
+import socket
+
+class MapListener(object):
+    '''
+    The main MapListener object adds/updates the map in the world model.
+    '''
+    
+    def __init__(self):
+        '''
+        Create the MapListener to listen to a map topic and update the world model accordingly.
+        '''
+        # create a connection to the action servers we need
+        rospy.loginfo('Waiting for world_model action servers to become available...')
+        self._cwoi = actionlib.SimpleActionClient('/spatial_world_model/create_world_object_instance',
+                                                  CreateWorldObjectInstanceAction)
+        self._uwoi = actionlib.SimpleActionClient('/spatial_world_model/update_world_object_instance',
+                                                  UpdateWorldObjectInstanceAction)
+        self._woits = actionlib.SimpleActionClient('/spatial_world_model/world_object_instance_tag_search',
+                                                   WorldObjectInstanceTagSearchAction)
+        self._cwod = actionlib.SimpleActionClient('/spatial_world_model/create_world_object_description',
+                                                  CreateWorldObjectDescriptionAction)
+        self._wodts = actionlib.SimpleActionClient('/spatial_world_model/world_object_description_tag_search',
+                                                   WorldObjectDescriptionTagSearchAction)
+        # wait for the action servers
+        self._cwoi.wait_for_server()
+        self._uwoi.wait_for_server()
+        self._woits.wait_for_server()
+        self._cwod.wait_for_server()
+        self._wodts.wait_for_server()
+        # check for a topic to listen on
+        t = rospy.get_param('~topic', '/map')
+        ns = rospy.get_param('~ns', socket.gethostname())
+        # subscribe to the topic with a queue size of 1
+        rospy.Subscriber(t, OccupancyGrid, self.map_cb, {'topic' : t, 'ns' : ns}, 1)
+        rospy.loginfo('Map Listener is Ready!')
+
+    def map_cb(self, msg, args):
+        '''
+        Main callback for a map topic. This will insert a new entity in the world object instance 
+        database or update an existing entity if one exists with the same tags. Furthermore,
+        if this is creating a new map, the occupancy grid will be stored in its description.
+        
+        @param msg: the ROS message for the map
+        @type  msg: OccupancyGrid
+        @param args: the topic and namespace for this node
+        @type  args: dict
+        '''
+        # get the tags
+        tags = ['map', args['ns']]
+        # check if we already have a map
+        self._woits.send_goal_and_wait(WorldObjectInstanceTagSearchGoal(tags))
+        resp = self._woits.get_result()
+        if len(resp.instances) > 0:
+            # check if we only found one (which should be the case)
+            if len(resp.instances) > 1:
+                rospy.logwarn('Multiple world object instances tagged with "map" and "' + args['ns']
+                              + '". Defaulting to first result.')
+            # check to see if we need to update the description
+            description_id = self._create_or_match_occupancy_grid_description(args['topic'], msg)
+            resp.instances[0].description_id = description_id
+            # create a goal and do the update (updates the timestamp only)
+            goal = UpdateWorldObjectInstanceGoal(resp.instances[0].instance_id, resp.instances[0])
+            # wait so that we don't try and re-update before this one is finished
+            self._uwoi.send_goal_and_wait(goal)
+        else:
+            # new instance
+            instance = WorldObjectInstance()
+            instance.name = args['ns'] + ' Map'
+            # source information for this node
+            instance.source.origin = socket.gethostname()
+            instance.source.creator = 'map_listener'
+            # position information
+            instance.pose.pose.pose = msg.info.origin
+            # maps usually last a long time (on year)
+            instance.expected_ttl = rospy.Duration(30758400)
+            # set the tags
+            instance.tags = tags
+            # create or match a description of the map using the occupancy grid
+            description_id = self._create_or_match_occupancy_grid_description(args['topic'], msg)
+            instance.description_id = description_id
+            # create a goal and do the instance creation
+            self._cwoi.send_goal_and_wait(CreateWorldObjectInstanceGoal(instance))
+
+    def _create_or_match_occupancy_grid_description(self, topic, msg):
+        '''
+        Checks all maps in the World Model to see if the description of this map already exists. If
+        so, the existing description_id is returned. If no such map description exists, one will be
+        created and the new description_id is returned.
+        
+        @param topic: the topic this message came from
+        @type  topic: string
+        @param msg: the ROS message for the map
+        @type  msg: OccupancyGrid
+        @return: the existing or new description_id
+        @rtype: integer
+        '''
+        # first check if we already have a match
+        description_id = self._match_occupancy_grid_description(topic, msg)
+        if description_id is None:
+            # we can now create a new one with this map
+            object_description = WorldObjectDescription()
+            descriptor = Descriptor()
+            descriptor.type = 'nav_msgs/OccupancyGrid'
+            descriptor.data = convert_ros_message_to_json(msg)
+            descriptor.ref = '{"type":"topic", "topic":"' + topic + '"}'
+            descriptor.tags.append('OccupancyGrid')
+            object_description.descriptors.append(descriptor)
+            object_description.tags.append('map')
+            # create a goal and do the description creation
+            self._cwod.send_goal_and_wait(CreateWorldObjectDescriptionGoal(object_description))
+            description_id = self._cwod.get_result().description_id
+        # return the id we found or created
+        return description_id
+
+    def _match_occupancy_grid_description(self, topic, msg):
+        '''
+        Checks all maps in the World Model to see if the description of this map already exists. If
+        so, the description_id is returned. If no such map description exists, None is returned.
+        
+        @param topic: the topic this message came from
+        @type  topic: string
+        @param msg: the ROS message for the map
+        @type  msg: OccupancyGrid
+        @return: the existing description_id or None if no match was found
+        @rtype: integer
+        '''
+        # get all maps
+        self._wodts.send_goal_and_wait(WorldObjectDescriptionTagSearchGoal(['map']))
+        resp = self._wodts.get_result()
+        # check all the results (if any)
+        for description in resp.descriptions:
+           # check all descriptors
+           for d in description.descriptors:
+               # check the
+               if d.type == 'nav_msgs/OccupancyGrid':
+                   try:
+                       # check the reference
+                       ref = json.loads(d.ref)
+                       if 'topic' in ref.keys() and ref['topic'] == topic:
+                           # try and get the data out
+                           cur = json.loads(d.data)
+                           # check the meta data and actual map
+                           if (cur['info']['width'] == msg.info.width
+                               and cur['info']['width'] == msg.info.width
+                               and cur['info']['resolution'] == msg.info.resolution
+                               and tuple(cur['data']) == msg.data):
+                               return description.description_id
+                   except ValueError, e:
+                       # invalid json
+                       pass
+        # nothing found
+        return None
+
+def main():
+    '''
+    The main run function for the map_listener node.
+    '''
+    rospy.init_node('map_listener')
+    MapListener()
+    rospy.spin()
+
+
+if __name__ == '__main__':
+    main()

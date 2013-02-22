@@ -1,0 +1,8 @@
+# the instance_id to update
+int32 instance_id
+# the instance to insert into the world model
+world_msgs/WorldObjectInstance instance
+---
+# if a valid update was performed
+bool success
+---

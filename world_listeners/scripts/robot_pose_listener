@@ -1,0 +1,170 @@
+#!/usr/bin/env python
+
+# Software License Agreement (BSD License)
+#
+# Copyright (c) 2013, Willow Garage, Inc.
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+#
+# * Redistributions of source code must retain the above copyright
+# notice, this list of conditions and the following disclaimer.
+# * Redistributions in binary form must reproduce the above
+# copyright notice, this list of conditions and the following
+# disclaimer in the documentation and/or other materials provided
+# with the distribution.
+# * Neither the name of Willow Garage, Inc. nor the names of its
+# contributors may be used to endorse or promote products derived
+# from this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+# FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+# COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+# INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+# BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+# LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+# LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+# ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
+
+'''
+The robot_pose_listener node listens to a specified Pose message from the robot_pose_publisher
+and updates the world model accordingly. This node will also wait for the robot pose to be
+published and try to re-localize the robot upon startup.
+
+@author:  Russell Toris
+@version: February 22, 2013
+'''
+
+import rospy
+import actionlib
+from worldlib.msg import *
+from world_msgs.msg import *
+from geometry_msgs.msg import Pose, PoseWithCovarianceStamped
+import socket
+
+class RobotPoseListener(object):
+    '''
+    The main RobotPoseListener object adds/updates the robot's pose in the world model.
+    '''
+
+    def __init__(self):
+        '''
+        Create the RobotPoseListener to listen to a pose topic and update the world model 
+        accordingly.
+        '''
+        # create a connection to the action servers we need
+        rospy.loginfo('Waiting for world_model action servers to become available...')
+        self._cwoi = actionlib.SimpleActionClient('/spatial_world_model/create_world_object_instance',
+                                                  CreateWorldObjectInstanceAction)
+        self._uwoi = actionlib.SimpleActionClient('/spatial_world_model/update_world_object_instance',
+                                                  UpdateWorldObjectInstanceAction)
+        self._woits = actionlib.SimpleActionClient('/spatial_world_model/world_object_instance_tag_search',
+                                                   WorldObjectInstanceTagSearchAction)
+        # wait for the action servers
+        self._cwoi.wait_for_server()
+        self._uwoi.wait_for_server()
+        self._woits.wait_for_server()
+        # check for a topic to listen on
+        t = rospy.get_param('~topic', '/robot_pose')
+        ns = rospy.get_param('~ns', socket.gethostname())
+        # check for an initial pose for this robot
+        self._woits.send_goal_and_wait(WorldObjectInstanceTagSearchGoal(['robot', ns]))
+        resp = self._woits.get_result()
+        # check if we should send in an initial pose
+        if len(resp.instances) > 0:
+            # check if we only found one (which should be the case)
+            if len(resp.instances) > 1:
+                rospy.logwarn('Multiple world object instances tagged with "robot" and "' + ns + 
+                              '". Defaulting to first result.')
+            # wait for the navigation stack to come up
+            rospy.loginfo('Previous robot pose found. Waiting for ' + t + ' to become available...')
+            rospy.wait_for_message(t, Pose)
+            pub = rospy.Publisher('/initialpose', PoseWithCovarianceStamped)
+            while pub.get_num_connections() < 1 and not rospy.is_shutdown():
+                rospy.sleep(0.1)
+            localized = resp.instances[0].pose
+            localized.header.frame_id = '/map'
+            pub.publish(localized)
+        # subscribe to the topic
+        rospy.Subscriber(t, Pose, self.pose_cb, {'ns' : ns}, 1)
+        rospy.loginfo('Robot Pose Listener is Ready!')
+
+    def pose_cb(self, message, args):
+        '''
+        Main callback for a pose topic. This will insert a new entity in the world object instance 
+        database or update an existing entity if one exists with the same tags. 
+        
+        @param message: the ROS message for the pose
+        @type  message: Pose
+        @param args: the namespace for this node
+        @type  args: dict
+        '''
+        # don't update so quickly
+        rate = rospy.Rate(1)
+        # tag this as a robot
+        tags = ['robot', args['ns']]
+        # check if we already have a robot
+        self._woits.send_goal_and_wait(WorldObjectInstanceTagSearchGoal(tags))
+        resp = self._woits.get_result()
+        if len(resp.instances) > 0:
+            # check if we only found one (which should be the case)
+            if len(resp.instances) > 1:
+                rospy.logwarn('Multiple world object instances tagged with "robot" and "' + 
+                              args['ns'] + '". Defaulting to first result.')
+            # update with new information
+            resp.instances[0].pose.pose.pose = message
+            # create a goal and do the update
+            goal = UpdateWorldObjectInstanceGoal(resp.instances[0].instance_id, resp.instances[0])
+            # wait so that we don't try and re-update before this one is finished
+            self._uwoi.send_goal_and_wait(goal)
+        else:
+            # new instance
+            instance = WorldObjectInstance()
+            # source information for this node
+            instance.source.origin = socket.gethostname()
+            instance.source.creator = 'robot_pose_listener'
+            # position information
+            instance.tags = tags
+            instance.pose.pose.pose = message
+            # default belief state
+            instance.pose.pose.covariance = [0.25, 0.0, 0.0, 0.0, 0.0, 0.0,
+                                             0.0, 0.25, 0.0, 0.0, 0.0, 0.0,
+                                             0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                                             0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                                             0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                                             0.0, 0.0, 0.0, 0.0, 0.0, 0.1]
+            # get our map ID
+            self._woits.send_goal_and_wait(WorldObjectInstanceTagSearchGoal(['map', args['ns']]))
+            resp = self._woits.get_result()
+            if len(resp.instances) > 0:
+                # check if we only found one (which should be the case)
+                if len(resp.instances) > 1:
+                    rospy.logwarn('Multiple world object instances tagged with "map" and "' 
+                                  + args['ns'] + '". Defaulting to first result.')
+                # assign the ID
+                instance.pose.header.frame_id = str(resp.instances[0].instance_id)
+            instance.pose.header.stamp = rospy.get_rostime()
+            instance.name = args['ns'] + ' Robot'
+            # robots usually are moving around
+            instance.expected_ttl = rospy.Duration(60)
+            # create a goal and do the instance creation
+            self._cwoi.send_goal_and_wait(CreateWorldObjectInstanceGoal(instance))
+        # don't update so quickly
+        rate.sleep()
+
+def main():
+    '''
+    The main run function for the robot_pose_listener node.
+    '''
+    rospy.init_node('robot_pose_listener')
+    RobotPoseListener()
+    rospy.spin()
+
+if __name__ == '__main__':
+    main()

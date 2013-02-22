@@ -1,0 +1,539 @@
+#!/usr/bin/env python
+
+# Software License Agreement (BSD License)
+#
+# Copyright (c) 2013, Willow Garage, Inc.
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+#
+# * Redistributions of source code must retain the above copyright
+# notice, this list of conditions and the following disclaimer.
+# * Redistributions in binary form must reproduce the above
+# copyright notice, this list of conditions and the following
+# disclaimer in the documentation and/or other materials provided
+# with the distribution.
+# * Neither the name of Willow Garage, Inc. nor the names of its
+# contributors may be used to endorse or promote products derived
+# from this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+# FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+# COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+# INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+# BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+# LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+# LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+# ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
+
+'''
+The spatial_world_model node exposes the worldlib API over ROS action servers.
+
+@author:  Russell Toris
+@version: February 22, 2013
+'''
+
+import rospy
+import actionlib
+from worldlib.world_object_instance_connection import WorldObjectInstanceConnection
+from worldlib.world_object_description_connection import WorldObjectDescriptionConnection
+from worldlib.descriptor_connection import DescriptorConnection
+from worldlib.msg import *
+from rospy_message_converter.message_converter import *
+
+class SpatialWorldModel(object):
+    '''
+    The main SpatialWorldModel object which bridges the worldlib API to ROS action servers.
+    '''
+    
+    def __init__(self, user, pwd, host):
+        '''
+        Creates and starts all action servers for the world model.
+        
+        @param user: the database username
+        @type  user: string
+        @param pwd: the database password
+        @type  pwd: string
+        @param host: the database hostname
+        @type  host: string
+        '''
+        # the connection to the databases
+        self._woic = WorldObjectInstanceConnection(user, pwd, host)
+        self._wodc = WorldObjectDescriptionConnection(user, pwd, host)
+        self._dc = DescriptorConnection(user, pwd, host)
+        # advertise the action servers
+        self._cwoi = actionlib.ActionServer('~create_world_object_instance',
+                                            CreateWorldObjectInstanceAction,
+                                            self.create_world_object_instance,
+                                            auto_start=False)
+        self._uwoi = actionlib.ActionServer('~update_world_object_instance',
+                                            UpdateWorldObjectInstanceAction,
+                                            self.update_world_object_instance,
+                                            auto_start=False)
+        self._woits = actionlib.ActionServer('~world_object_instance_tag_search',
+                                             WorldObjectInstanceTagSearchAction,
+                                             self.world_object_instance_tag_search,
+                                             auto_start=False)
+        self._cwod = actionlib.ActionServer('~create_world_object_description',
+                                            CreateWorldObjectDescriptionAction,
+                                            self.create_world_object_description,
+                                            auto_start=False)
+        self._gwod = actionlib.ActionServer('~get_world_object_description',
+                                            GetWorldObjectDescriptionAction,
+                                            self.get_world_object_description,
+                                            auto_start=False)
+        self._wodts = actionlib.ActionServer('~world_object_description_tag_search',
+                                             WorldObjectDescriptionTagSearchAction,
+                                             self.world_object_description_tag_search,
+                                             auto_start=False)
+        # start the action servers
+        self._cwoi.start()
+        self._uwoi.start()
+        self._woits.start()
+        self._cwod.start()
+        self._gwod.start()
+        self._wodts.start()
+        rospy.loginfo('World Model Node is Ready')
+
+    def create_world_object_instance(self, gh):
+        '''
+        The create_world_object_instance action server will create a new instance in the world 
+        object instances table. A unique instance_id will be assigned and the creation time will 
+        be set.
+        
+        @param gh: the goal handle containing the instance to insert into the database
+        @type  gh: ServerGoalHandle
+        '''
+        gh.set_accepted()
+        goal = gh.get_goal()
+        # update the times
+        t = rospy.get_rostime()
+        goal.instance.creation = t
+        goal.instance.update = t
+        # convert to a dict and insert
+        dict = self._world_object_instance_msg_to_db_dict(goal.instance)
+        instance_id = self._woic.insert(dict)
+        # put the instance_id into the response
+        result = CreateWorldObjectInstanceResult(instance_id)
+        # send the response
+        gh.set_succeeded(result, 'Success')
+    
+    def update_world_object_instance(self, gh):
+        '''
+        The update_world_object_instance action server will update an instance in the world object 
+        instances table. The update time will be set to the current time. The instance_id cannot 
+        be updated with this request.
+        
+        @param gh: the goal handle containing the instance to update in the database
+        @type  gh: ServerGoalHandle
+        '''
+        gh.set_accepted()
+        goal = gh.get_goal()
+        # update the update time
+        goal.instance.update = rospy.get_rostime()
+        # make sure to set the instance_id so it cannot be changed
+        goal.instance.instance_id = goal.instance_id
+        # convert to a dict and update
+        dict = self._world_object_instance_msg_to_db_dict(goal.instance)
+        success = self._woic.update_entity_by_instance_id(goal.instance_id, dict)
+        if success is not True:
+            rospy.logwarn(goal.instance_id + ' could not be updated.')
+            response = goal.instance_id + ' could not be updated. Is the instance_id valid?'
+        else:
+            response = 'Success'
+        # put the result into the response
+        result = UpdateWorldObjectInstanceResult(success)
+        # send the response
+        gh.set_succeeded(result, response)
+        
+    def world_object_instance_tag_search(self, gh):
+        '''
+        The world_object_instance_tag_search action server will search for all instances in the 
+        database that have the given list of tags.
+        
+        @param gh: the goal containing the tags to search for
+        @type  gh: ServerGoalHandle
+        '''
+        gh.set_accepted()
+        goal = gh.get_goal()
+        # search for all of the tags
+        entity = self._woic.search_tags(goal.tags)
+        # parse out the data
+        instances = []
+        for e in entity:
+            instances.append(self._db_dict_to_world_object_instance_msg(e))
+        # put the instances into the response
+        result = WorldObjectInstanceTagSearchResult(instances)
+        # send the response
+        gh.set_succeeded(result, 'Success')
+
+    def create_world_object_description(self, gh):
+        '''
+        The create_world_object_description action server will create a new description in the world 
+        object descriptions table and store the descriptors. A unique description_id will be 
+        assigned.
+        
+        @param gh: the goal handle containing the description to insert into the database
+        @type  gh: ServerGoalHandle
+        '''
+        gh.set_accepted()
+        goal = gh.get_goal()
+        # convert to a dict and insert the actual description
+        dict = self._world_object_description_msg_to_db_dict(goal.description)
+        description_id = self._wodc.insert(dict)
+        # now insert all of the descriptors
+        for d in goal.description.descriptors:
+            # convert to a dict
+            dict = self._descriptor_msg_to_db_dict(d)
+            # add the description_id
+            dict['description_id'] = description_id
+            # insert the actual descriptor
+            self._dc.insert(dict)
+        # put the description_id into the response
+        result = CreateWorldObjectDescriptionResult(description_id)
+        # send the response
+        gh.set_succeeded(result, 'Success')
+        
+    def get_world_object_description(self, gh):
+        '''
+        The get_world_object_description action server will search for and return a world object 
+        description with the given description_id.
+        
+        @param gh: the goal handle containing the description_id to get
+        @type  gh: ServerGoalHandle
+        '''
+        gh.set_accepted()
+        goal = gh.get_goal()
+        # make a request through the API
+        entity = self._wodc.search_description_id(goal.description_id)
+        # parse out the data
+        description = self._db_dict_to_world_object_description_msg(entity)
+        if entity is None:
+            response = str(goal.description_id) + ' not found.'
+        else:
+            # now check for all descriptors
+            descriptors = self._dc.search_by_description_id(goal.description_id)
+            for d in descriptors:
+                description.descriptors.append(self._db_dict_to_descriptor_msg(d))
+            response = 'Success'
+        # put the result into the response
+        result = GetWorldObjectDescriptionResult(description, entity is not None)
+        # send the response
+        gh.set_succeeded(result, response)
+        
+    def world_object_description_tag_search(self, gh):
+        '''
+        The world_object_description_tag_search action server will search for all descriptions in 
+        the database that have the given list of tags.
+        
+        @param gh: the goal containing the tags to search for
+        @type  gh: ServerGoalHandle
+        '''
+        gh.set_accepted()
+        goal = gh.get_goal()
+        # search for all of the tags
+        entity = self._wodc.search_tags(goal.tags)
+        # parse out the data
+        descriptions = []
+        for e in entity:
+            msg = self._db_dict_to_world_object_description_msg(e)
+             # now check for all descriptors
+            descriptors = self._dc.search_by_description_id(msg.description_id)
+            for d in descriptors:
+                msg.descriptors.append(self._db_dict_to_descriptor_msg(d))
+            descriptions.append(msg)
+        # put the instances into the response
+        result = WorldObjectDescriptionTagSearchResult(descriptions)
+        # send the response
+        gh.set_succeeded(result, 'Success')
+        
+    def _world_object_instance_msg_to_db_dict(self, msg):
+        '''
+        Convert a WorldObjectInstance message to a database dictionary that can be inserted into
+        the World Model database. 
+        
+        @param msg: the WorldObjectInstance message 
+        @type  msg: WorldObjectInstance
+        @return: the converted dictionary
+        @rtype: dict
+        '''
+        # first create a dictionary from the message itself
+        ros_dict = convert_ros_message_to_dictionary(msg)
+        # now filter through to create a valid database dict
+        final = {}
+        for k in ros_dict.keys():
+            v = ros_dict[k]
+            if k is 'instance_id' and v > 0:
+                final[k] = v
+            elif k is 'name' and len(v) > 0:
+                final[k] = v
+            elif (k in self._woic.timestamps or k is 'expected_ttl') and v['secs'] + v['nsecs'] > 0:
+                # converts secs to timestamp in insert
+                final[k] = v['secs'] + (v['nsecs'] / 1000000000.0)
+            elif k is 'source':
+                # check each part of the source
+                if len(v['origin']) > 0:
+                    final['source_origin'] = v['origin']
+                if len(v['creator']) > 0:
+                    final['source_creator'] = v['creator']
+            elif k is 'pose':
+                # insert the header
+                final['pose_seq'] = v['header']['seq']
+                if v['header']['stamp']['secs'] + v['header']['stamp']['nsecs'] > 0:
+                    secs = v['header']['stamp']['secs']
+                    nsecs = v['header']['stamp']['nsecs']
+                    final['pose_stamp'] = secs + (nsecs / 1000000000.0)
+                if len(v['header']['frame_id']) > 0:
+                    final['pose_frame_id'] = v['header']['frame_id']
+                # insert the pose information
+                pos = v['pose']['pose']['position']
+                ori = v['pose']['pose']['orientation']
+                final['pose_position'] = [pos['x'], pos['y'], pos['z']]
+                final['pose_orientation'] = [ori['x'], ori['y'], ori['z'], ori['w']]
+                final['pose_covariance'] = v['pose']['covariance']
+            elif k is 'description_id' and v > 0:
+                final[k] = v
+            elif k is 'properties' and len(v) > 0:
+                final[k] = v
+            elif k is 'tags' and len(v) > 0:
+                final[k] = v
+        return final
+    
+    def _db_dict_to_world_object_instance_msg(self, entity):
+        '''
+        Convert a dictionary from the World Model database to a WorldObjectInstance message.
+        
+        @param entity: the dictionary from the database
+        @type  entity: dict
+        @return: the WorldObjectInstance message 
+        @rtype: WorldObjectInstance
+        '''
+        # check if the pose information is None
+        if(entity['pose_position'] is None):
+            pos = [0, 0, 0]
+        else:
+            pos = entity['pose_position']
+        if(entity['pose_orientation'] is None):
+            ori = [0, 0, 0, 0]
+        else:
+            ori = entity['pose_orientation']
+        if(entity['pose_covariance'] is None):
+            cov = [0, 0, 0, 0, 0, 0,
+                   0, 0, 0, 0, 0, 0,
+                   0, 0, 0, 0, 0, 0,
+                   0, 0, 0, 0, 0, 0,
+                   0, 0, 0, 0, 0, 0,
+                   0, 0, 0, 0, 0, 0]
+        else:
+            cov = entity['pose_covariance']
+        # filter through to create a valid ROS message dictionary
+        msg = {
+               'instance_id' : self._none_string_check(entity['instance_id']),
+               'name' : self._none_string_check(entity['name']),
+               'creation' : self._unix_time_to_ros_dict(entity['creation']),
+               'update' : self._unix_time_to_ros_dict(entity['update']),
+               'expected_ttl' : self._unix_time_to_ros_dict(entity['expected_ttl']),
+               'perceived_end' : self._unix_time_to_ros_dict(entity['perceived_end']),
+               'source' : {
+                           'origin' : self._none_string_check(entity['source_origin']),
+                           'creator' : self._none_string_check(entity['source_creator'])
+                           },
+               'pose' : {
+                         'header' : {
+                                     'seq' : self._none_int_check(entity['pose_seq']),
+                                     'stamp' : self._unix_time_to_ros_dict(entity['pose_stamp']),
+                                     'frame_id' : self._none_string_check(entity['pose_frame_id'])
+                                    },
+                         'pose' : {
+                                   'pose' : {
+                                             'position' : {
+                                                           'x' : pos[0],
+                                                           'y' : pos[1],
+                                                           'z' : pos[2],
+                                                           },
+                                             'orientation' : {
+                                                           'x' : ori[0],
+                                                           'y' : ori[1],
+                                                           'z' : ori[2],
+                                                           'w' : ori[3],
+                                                           },
+                                             },
+                                   'covariance' : cov
+                                   }
+                         },
+               'description_id' : self._none_int_check(entity['description_id']),
+               'properties' : self._none_list_check(entity['properties']),
+               'tags' : self._none_list_check(entity['tags'])
+               }
+        # convert to a ROS message
+        return convert_dictionary_to_ros_message('world_msgs/WorldObjectInstance', msg)
+    
+    def _world_object_description_msg_to_db_dict(self, msg):
+        '''
+        Convert a WorldObjectDescription message to a database dictionary that can be inserted into
+        the World Model database. 
+        
+        @param msg: the WorldObjectDescription message 
+        @type  msg: WorldObjectDescription
+        @return: the converted dictionary
+        @rtype: dict
+        '''
+        # first create a dictionary from the message itself
+        ros_dict = convert_ros_message_to_dictionary(msg)
+        # now filter through to create a valid database dict
+        final = {}
+        for k in ros_dict.keys():
+            v = ros_dict[k]
+            if k is 'name' and len(v) > 0:
+                final[k] = v
+            elif k is 'tags' and len(v) > 0:
+                final[k] = v
+        return final
+    
+    def _db_dict_to_world_object_description_msg(self, entity):
+        '''
+        Convert a dictionary from the World Model database to a WorldObjectDescription message.
+        Descriptors must be added afterwards. An empty list will be put in its place.
+        
+        @param entity: the dictionary from the database
+        @type  entity: dict
+        @return: the WorldObjectDescription message 
+        @rtype: WorldObjectDescription
+        '''
+        # filter through to create a valid ROS message dictionary
+        msg = {
+               'description_id' : self._none_string_check(entity['description_id']),
+               'name' : self._none_string_check(entity['name']),
+               'descriptors' : [],
+               'tags' : self._none_list_check(entity['tags'])
+               }
+        # convert to a ROS message
+        return convert_dictionary_to_ros_message('world_msgs/WorldObjectDescription', msg)
+
+    def _db_dict_to_descriptor_msg(self, entity):
+        '''
+        Convert a dictionary from the World Model database to a Descriptor message.
+        
+        @param entity: the dictionary from the database
+        @type  entity: dict
+        @return: the Descriptor message 
+        @rtype: Descriptor
+        '''
+        # filter through to create a valid ROS message dictionary
+        msg = {
+               'type' : self._none_string_check(entity['type']),
+               'data' : self._none_string_check(entity['data']),
+               'ref' : self._none_string_check(entity['ref']),
+               'tags' : self._none_list_check(entity['tags'])
+               }
+        # convert to a ROS message
+        return convert_dictionary_to_ros_message('world_msgs/Descriptor', msg)
+    
+    def _descriptor_msg_to_db_dict(self, msg):
+        '''
+        Convert a Descriptor message to a database dictionary that can be inserted into the World 
+        Model database. 
+        
+        @param msg: the Descriptor message 
+        @type  msg: Descriptor
+        @return: the converted dictionary
+        @rtype: dict
+        '''
+        # first create a dictionary from the message itself
+        ros_dict = convert_ros_message_to_dictionary(msg)
+        # now filter through to create a valid database dict
+        final = {}
+        for k in ros_dict.keys():
+            v = ros_dict[k]
+            if k is 'type' and len(v) > 0:
+                final[k] = v
+            elif k is 'data' and len(v) > 0:
+                final[k] = v
+            elif k is 'ref' and len(v) > 0:
+                final[k] = v
+            elif k is 'tags' and len(v) > 0:
+                final[k] = v
+        return final
+    
+    def _none_list_check(self, l):
+        '''
+        Check if the given list is set to None and return an empty list if so. Otherwise, the 
+        original list is returned.
+        
+        @param l: the list to check
+        @type  l: list
+        @return: the original list or an empty list if l is None
+        @rtype: list
+        '''
+        if l is None:
+            return []
+        else:
+            return l
+    
+    def _none_int_check(self, i):
+        '''
+        Check if the given int is set to None and return 0 if so. Otherwise, the original int is 
+        returned.
+        
+        @param i: the int to check
+        @type  i: int
+        @return: the original int or 0 if i is None
+        @rtype: int
+        '''
+        if i is None:
+            return 0
+        else:
+            return i
+    
+    def _none_string_check(self, str):
+        '''
+        Check if the given string is set to None and return the empty string if so. Otherwise,
+        the original string is returned.
+        
+        @param str: the string object to check
+        @type  str: string
+        @return: the original string or the empty string if str is None
+        @rtype: string
+        '''
+        if str is None:
+            return ''
+        else:
+            return str
+    
+    def _unix_time_to_ros_dict(self, t):
+        '''
+        Convert the given unix floating point time into a ROS time dictionary.
+        
+        @param t: the unix time
+        @type  t: float
+        @return: the ROS time dictionary (i.e., secs and nsecs)
+        @rtype: dict
+        '''
+        # check if we have a valid time
+        if t is not None and t > 0:
+            secs = int(t)
+            nsecs = int((t - secs) * 1000000000.0)
+            return {'secs' : secs, 'nsecs' : nsecs}
+        else:
+            return {'secs' : 0, 'nsecs' : 0}
+    
+def main():
+    '''
+    The main run function for the spatial_world_model node.
+    '''
+    rospy.init_node('spatial_world_model')
+    # create the object to handle everything
+    user = rospy.get_param('~user', 'world')
+    pwd = rospy.get_param('~password', 'model')
+    host = rospy.get_param('~host', 'localhost')
+    SpatialWorldModel(user, pwd, host)
+    rospy.spin()
+
+if __name__ == '__main__':
+    main()

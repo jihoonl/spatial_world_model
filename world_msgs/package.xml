@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<package>
+  <name>world_msgs</name>
+  <version>0.0.1</version>
+  <description>Common messages to communicate with the spatial world model.</description>
+
+  <maintainer email="rctoris@wpi.edu">Russell Toris</maintainer>
+  <author email="rctoris@wpi.edu">Russell Toris</author>
+
+  <license>BSD</license>
+  
+  <url type="website">http://ros.org/wiki/world_msgs</url>
+  <url type="bugtracker">https://github.com/RobotWebTools/spatial_world_model/issues</url>
+  <url type="repository">https://github.com/RobotWebTools/spatial_world_model</url>
+  
+  <buildtool_depend>catkin</buildtool_depend>
+  <build_depend>std_msgs</build_depend>
+  <build_depend>geometry_msgs</build_depend>
+  <build_depend>message_generation</build_depend>
+  
+  <run_depend>message_runtime</run_depend>
+  <run_depend>std_msgs</run_depend>
+  <run_depend>geometry_msgs</run_depend>
+</package>

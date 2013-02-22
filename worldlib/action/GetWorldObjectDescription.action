@@ -1,0 +1,8 @@
+# the description_id to get
+int32 description_id
+---
+# the description from the database
+world_msgs/WorldObjectDescription description
+# set to true if the description_id was valid
+bool exists
+---

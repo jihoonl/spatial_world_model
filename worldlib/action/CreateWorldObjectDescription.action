@@ -1,0 +1,6 @@
+# the description to insert into the world model
+world_msgs/WorldObjectDescription description
+---
+# the description_id assigned to the description
+int32 description_id
+---

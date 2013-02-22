@@ -1,0 +1,6 @@
+# the tags to search for
+string[] tags
+---
+# the instances which contain all of the searched tags
+world_msgs/WorldObjectInstance[] instances
+---

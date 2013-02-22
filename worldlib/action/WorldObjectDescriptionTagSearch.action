@@ -1,0 +1,6 @@
+# the tags to search for
+string[] tags
+---
+# the descriptions which contain all of the searched tags
+world_msgs/WorldObjectDescription[] descriptions
+---
