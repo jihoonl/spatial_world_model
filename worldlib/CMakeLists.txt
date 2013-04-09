@@ -19,6 +19,7 @@ add_action_files(DIRECTORY action
   FILES
   CreateWorldObjectDescription.action
   CreateWorldObjectInstance.action
+  RemoveWorldObjectInstance.action
   GetWorldObjectDescription.action
   UpdateWorldObjectInstance.action
   WorldObjectInstanceTagSearch.action

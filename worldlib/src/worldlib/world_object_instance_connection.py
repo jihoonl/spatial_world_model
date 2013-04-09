@@ -100,6 +100,32 @@ class WorldObjectInstanceConnection(object):
             cur.close()
         # return the instance ID
         return instance_id
+
+    def delete(self, instance_id): 
+        '''
+        Delete the entity of the given instance_id from world_object_instances table.
+
+        @param instance_id : the unique identifier of entity
+        @type  instance_id : integer
+        @return: result
+        @rtype: bool 
+        '''
+        with self.lock:
+            # create a cursor
+            cur = self.conn.cursor()
+            # build the SQL
+            cur.execute("""DELETE FROM """ + self._woi + 
+                        """ WHERE instance_id = %s""",(instance_id,))
+            if len(cur.fetchall()) is 0:
+                cur.close()
+                result = False
+            else:
+                # ensure the 
+                self.conn.commit()
+                cur.close()
+                result = True
+        return result
+
             
     def update_entity_by_instance_id(self, instance_id, entity):
         '''

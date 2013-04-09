@@ -72,6 +72,10 @@ class SpatialWorldModel(object):
                                             CreateWorldObjectInstanceAction,
                                             self.create_world_object_instance,
                                             auto_start=False)
+        self._rwoi = actionlib.ActionServer('~remove_world_object_instance',
+                                            RemoveWorldObjectInstanceAction,
+                                            self.remove_world_object_instance,
+                                            auto_start=False)
         self._uwoi = actionlib.ActionServer('~update_world_object_instance',
                                             UpdateWorldObjectInstanceAction,
                                             self.update_world_object_instance,
@@ -94,6 +98,7 @@ class SpatialWorldModel(object):
                                              auto_start=False)
         # start the action servers
         self._cwoi.start()
+        self._rwoi.start()
         self._uwoi.start()
         self._woits.start()
         self._cwod.start()
@@ -123,6 +128,27 @@ class SpatialWorldModel(object):
         result = CreateWorldObjectInstanceResult(instance_id)
         # send the response
         gh.set_succeeded(result, 'Success')
+
+    def remove_world_object_instance(self, gh):
+        '''
+        The remove_world_object_instance action server will removea the existing instance in the world 
+        object instances table. An entity which matches with the given unique instance_id will be removed. 
+        
+        @param gh: the goal handle containing the instance to insert into the database
+        @type  gh: ServerGoalHandle
+        '''
+        gh.set_accepted()
+        goal = gh.get_goal()
+        instance_id = goal.instance_id
+
+        result = self._woic.delete(instance_id)
+
+        # put the instance_id into the response
+        action_result = CreateWorldObjectInstanceResult(result)
+        # send the response
+        gh.set_succeeded(action_result, 'Success')
+
+
     
     def update_world_object_instance(self, gh):
         '''
