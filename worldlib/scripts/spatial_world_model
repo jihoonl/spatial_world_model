@@ -144,7 +144,7 @@ class SpatialWorldModel(object):
         result = self._woic.delete(instance_id)
 
         # put the instance_id into the response
-        action_result = CreateWorldObjectInstanceResult(result)
+        action_result = RemoveWorldObjectInstanceResult(result)
         # send the response
         gh.set_succeeded(action_result, 'Success')
 

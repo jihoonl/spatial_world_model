@@ -114,16 +114,10 @@ class WorldObjectInstanceConnection(object):
             # create a cursor
             cur = self.conn.cursor()
             # build the SQL
-            cur.execute("""DELETE FROM """ + self._woi + 
-                        """ WHERE instance_id = %s""",(instance_id,))
-            if len(cur.fetchall()) is 0:
-                cur.close()
-                result = False
-            else:
-                # ensure the 
-                self.conn.commit()
-                cur.close()
-                result = True
+            cur.execute("""DELETE FROM """ + self._woi + """ WHERE instance_id = %s""",(instance_id,))
+            self.conn.commit()
+            cur.close()
+            result = True
         return result
 
             
