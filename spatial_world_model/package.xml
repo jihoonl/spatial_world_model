@@ -14,9 +14,6 @@
   <url type="repository">https://github.com/RobotWebTools/spatial_world_model</url>
   
   <buildtool_depend>catkin</buildtool_depend>
-  <build_depend>worldlib</build_depend>
-  <build_depend>world_listeners</build_depend>
-  <build_depend>world_msgs</build_depend>
 
   <run_depend>worldlib</run_depend>
   <run_depend>world_listeners</run_depend>
